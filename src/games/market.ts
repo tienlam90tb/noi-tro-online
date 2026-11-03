@@ -1,5 +1,6 @@
 import { marketScore } from "../scoring";
 import { sfx } from "../sfx";
+import { Actors, pick, sceneHtml } from "../scene";
 import { countdown, sleep, type Game } from "./types";
 
 interface Item {
@@ -34,6 +35,9 @@ const ITEMS: Item[] = [
   { emoji: "🌽", name: "ngô" },
 ];
 
+const VENDOR_HELLO = ["Rau sạch đây em ơi, mua gì cô lấy cho!", "Hàng mới về sáng nay, tươi lắm em!", "Vào xem đi em, cô bán rẻ!"];
+const VENDOR_PICK = ["Ừ, cái này ngon đấy!", "Em chọn khéo ghê!", "Lấy thêm đi em!", "Cô cân cho nhé!"];
+
 const LIST_SIZE = 5;
 const STALL_SIZE = 12;
 const MEMORIZE_SECONDS = 6;
@@ -54,7 +58,7 @@ export const market: Game = {
   emoji: "🛒",
   howTo: `Nhớ danh sách ${LIST_SIZE} món trong ${MEMORIZE_SECONDS} giây, rồi chọn đúng món ở sạp. Mua nhầm bị trừ điểm!`,
 
-  async play(root) {
+  async play(root, { role }) {
     const wanted = shuffle(ITEMS).slice(0, LIST_SIZE);
     const wantedSet = new Set(wanted.map((i) => i.emoji));
     // Bày món dễ nhầm trước, rồi thêm món ngẫu nhiên cho đủ sạp.
@@ -75,9 +79,22 @@ export const market: Game = {
     const picked = new Set<string>();
     root.innerHTML = `
       <div class="game-bar"><span>🛒 Giỏ: <b class="count">0</b>/${LIST_SIZE}</span><span class="timer"></span></div>
+      ${sceneHtml({
+        kind: "market",
+        role,
+        speaker: { emoji: "👩‍🌾", name: "Cô bán rau" },
+        work: `<div class="stall">${stall.map((i) => `<button class="stall-item" data-emoji="${i.emoji}" aria-label="${i.name}">${i.emoji}</button>`).join("")}</div>`,
+      })}
       <p class="hint">Chạm vào món cần mua. Chạm lần nữa để bỏ ra.</p>
-      <div class="stall">${stall.map((i) => `<button class="stall-item" data-emoji="${i.emoji}" aria-label="${i.name}">${i.emoji}</button>`).join("")}</div>
       <button class="btn primary pay">Thanh toán</button>`;
+    const actors = new Actors(root);
+    actors.say(pick(VENDOR_HELLO), 1800, true);
+    // Giữa chừng cô bán hàng dụ mua thêm một món không có trong danh sách.
+    const upsell = stall.find((i) => !wantedSet.has(i.emoji))!;
+    const upsellTimer = window.setTimeout(() => {
+      actors.say(`Mua thêm ít ${upsell.name} không em? Cô bớt cho!`, 2200, true);
+      root.querySelector(`.stall-item[data-emoji="${upsell.emoji}"]`)?.classList.add("promo");
+    }, 7000);
 
     await new Promise<void>((resolve) => {
       const stop = countdown(root.querySelector(".timer")!, SHOP_SECONDS, resolve);
@@ -85,6 +102,7 @@ export const market: Game = {
         stop();
         resolve();
       });
+      root.querySelector(".timer")!.addEventListener("animationstart", () => actors.say("Nhanh lên em, cô sắp dọn hàng!", 1500));
       root.querySelectorAll<HTMLButtonElement>(".stall-item").forEach((btn) => {
         btn.addEventListener("click", () => {
           const e = btn.dataset.emoji!;
@@ -92,6 +110,10 @@ export const market: Game = {
           else picked.add(e);
           btn.classList.toggle("picked", picked.has(e));
           root.querySelector(".count")!.textContent = String(picked.size);
+          const r = btn.getBoundingClientRect();
+          actors.reach(r.left + r.width / 2, r.top + r.height / 2);
+          setTimeout(() => actors.relax(), 350);
+          if (picked.has(e)) actors.say(pick(VENDOR_PICK));
           sfx.tap();
         });
       });
@@ -106,10 +128,19 @@ export const market: Game = {
       if (picked.has(e)) btn.classList.add(wantedSet.has(e) ? "right" : "wrong");
       else if (wantedSet.has(e)) btn.classList.add("missed");
     });
+    clearTimeout(upsellTimer);
     root.querySelector(".pay")?.remove();
-    if (wrong.length || correct.length < LIST_SIZE) sfx.bad();
-    else sfx.good();
-    await sleep(1600);
+    if (wrong.length || correct.length < LIST_SIZE) {
+      sfx.bad();
+      actors.mood("shock");
+      actors.say(wrong.length ? "Cảm ơn em nhé, lần sau lại mua nhầm ủng hộ cô!" : "Còn quên món kìa em ơi!", 1600, true);
+    } else {
+      sfx.good();
+      actors.mood("happy");
+      actors.say("Đi chợ khéo thế, cô tặng thêm nắm hành!", 1600, true);
+    }
+    await sleep(1800);
+    actors.dispose();
 
     const wrongNames = wrong.map((e) => ITEMS.find((i) => i.emoji === e)!.name);
     return {

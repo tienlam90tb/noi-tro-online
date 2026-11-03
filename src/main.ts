@@ -124,7 +124,7 @@ async function run(role: Role, name: string) {
   for (const [i, game] of GAMES.entries()) {
     await intro(game, i);
     app.innerHTML = `<main class="play"></main>`;
-    const result = await game.play(app.querySelector<HTMLElement>(".play")!);
+    const result = await game.play(app.querySelector<HTMLElement>(".play")!, { role });
     results.push(result);
     await verdict(role, game, result);
   }
