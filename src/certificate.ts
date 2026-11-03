@@ -1,9 +1,11 @@
+import type { Level } from "./levels";
 import type { Role } from "./roles";
 
 export interface CertData {
   name: string;
   role: Role;
   title: string;
+  level: Level;
   total: number;
   rows: { emoji: string; name: string; score: number }[];
   url: string;
@@ -68,7 +70,11 @@ export function drawCertificate(d: CertData): HTMLCanvasElement {
 
   ctx.fillStyle = "#c2410c";
   ctx.font = font(70, 900);
-  wrap(ctx, d.title.toUpperCase(), W - 200).forEach((line, i) => ctx.fillText(line, W / 2, 625 + i * 80));
+  const titleLines = wrap(ctx, d.title.toUpperCase(), W - 200);
+  titleLines.forEach((line, i) => ctx.fillText(line, W / 2, 615 + i * 78));
+  ctx.fillStyle = "#6b7280";
+  ctx.font = font(32, 700);
+  ctx.fillText(`Độ khó: ${d.level.emoji} ${d.level.label}`, W / 2, 615 + titleLines.length * 78 - 8);
 
   // Bảng điểm từng việc.
   ctx.textAlign = "left";

@@ -7,6 +7,7 @@ import { laundry } from "./games/laundry";
 import { market } from "./games/market";
 import { rice } from "./games/rice";
 import type { Game, GameResult } from "./games/types";
+import { byLevel, levelById, LEVELS, type Level } from "./levels";
 import { roleById, ROLES, type Role } from "./roles";
 import { average } from "./scoring";
 import { isMuted, setMuted, sfx } from "./sfx";
@@ -18,7 +19,9 @@ const app = document.getElementById("app")!;
 const SHARE_URL = location.href.split("#")[0].split("?")[0];
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const best = (roleId: string) => Number(localStorage.getItem(`noitro.best.${roleId}`) ?? 0);
+// Mức tập sự giữ khoá cũ để không mất kỷ lục đã có.
+const bestKey = (roleId: string, level: Level) => `noitro.best.${roleId}${level.id === "de" ? "" : `.${level.id}`}`;
+const best = (roleId: string, level: Level) => Number(localStorage.getItem(bestKey(roleId, level)) ?? 0);
 
 function muteButton() {
   return `<button class="icon-btn mute" aria-label="Bật/tắt âm thanh">${isMuted() ? "🔇" : "🔊"}</button>`;
@@ -34,6 +37,7 @@ document.addEventListener("click", (e) => {
 function home() {
   const lastName = localStorage.getItem("noitro.name") ?? "";
   const lastRole = localStorage.getItem("noitro.role") ?? "chong";
+  let level = levelById(localStorage.getItem("noitro.level"));
   app.innerHTML = `
     <header class="top">${muteButton()}</header>
     <main class="home">
@@ -48,11 +52,20 @@ function home() {
         ${ROLES.map(
           (r) => `<button class="role ${r.id === lastRole ? "selected" : ""}" data-role="${r.id}">
             <span class="role-emoji">${r.emoji}</span>${r.label}
-            ${best(r.id) ? `<small>Kỷ lục: ${best(r.id)}</small>` : ""}
+            <small class="best"></small>
           </button>`,
         ).join("")}
       </div>
       <p class="muted small">Người chấm: <b class="judge"></b></p>
+      <div class="field">Độ khó</div>
+      <div class="levels">
+        ${LEVELS.map(
+          (l) => `<button class="level ${l.id === level.id ? "selected" : ""}" data-level="${l.id}">
+            <span class="level-emoji">${l.emoji}</span>${l.label}
+          </button>`,
+        ).join("")}
+      </div>
+      <p class="muted small level-desc"></p>
       <button class="btn primary big start">Bắt đầu làm việc nhà</button>
       <p class="muted small">4 việc: ${GAMES.map((g) => `${g.emoji} ${g.name}`).join(" · ")}</p>
     </main>`;
@@ -64,6 +77,22 @@ function home() {
     judgeEl.textContent = `${r.judge} ${r.judgeEmoji}`;
   };
   showJudge();
+  const showLevel = () => {
+    app.querySelector(".level-desc")!.textContent = level.desc;
+    app.querySelectorAll<HTMLElement>(".role").forEach((b) => {
+      const n = best(b.dataset.role!, level);
+      b.querySelector(".best")!.textContent = n ? `Kỷ lục: ${n}` : "";
+    });
+  };
+  showLevel();
+  app.querySelectorAll<HTMLButtonElement>(".level").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      level = levelById(btn.dataset.level!);
+      app.querySelectorAll(".level").forEach((b) => b.classList.toggle("selected", b === btn));
+      showLevel();
+      sfx.tap();
+    }),
+  );
   app.querySelectorAll<HTMLButtonElement>(".role").forEach((btn) =>
     btn.addEventListener("click", () => {
       roleId = btn.dataset.role!;
@@ -76,19 +105,20 @@ function home() {
     const name = app.querySelector<HTMLInputElement>(".name")!.value.trim();
     localStorage.setItem("noitro.name", name);
     localStorage.setItem("noitro.role", roleId);
+    localStorage.setItem("noitro.level", level.id);
     sfx.tap();
-    void run(roleById(roleId), name);
+    void run(roleById(roleId), level, name);
   });
 }
 
-function intro(game: Game, index: number): Promise<void> {
+function intro(game: Game, index: number, level: Level): Promise<void> {
   return new Promise((resolve) => {
     app.innerHTML = `
-      <header class="top"><span class="step">Việc ${index + 1}/${GAMES.length}</span>${muteButton()}</header>
+      <header class="top"><span class="step">Việc ${index + 1}/${GAMES.length} · ${level.emoji} ${level.label}</span>${muteButton()}</header>
       <main class="center">
         <div class="big-emoji">${game.emoji}</div>
         <h2>${game.name}</h2>
-        <p class="howto">${game.howTo}</p>
+        <p class="howto">${game.howTo(level)}</p>
         <button class="btn primary big go">Sẵn sàng!</button>
       </main>`;
     app.querySelector(".go")!.addEventListener("click", () => {
@@ -119,38 +149,40 @@ function verdict(role: Role, game: Game, result: GameResult): Promise<void> {
   });
 }
 
-async function run(role: Role, name: string) {
+async function run(role: Role, level: Level, name: string) {
   const results: GameResult[] = [];
   for (const [i, game] of GAMES.entries()) {
-    await intro(game, i);
+    await intro(game, i, level);
     app.innerHTML = `<main class="play"></main>`;
-    const result = await game.play(app.querySelector<HTMLElement>(".play")!, { role });
+    const result = await game.play(app.querySelector<HTMLElement>(".play")!, { role, level });
     results.push(result);
     await verdict(role, game, result);
   }
-  finish(role, name, results);
+  finish(role, level, name, results);
 }
 
-function finish(role: Role, name: string, results: GameResult[]) {
+function finish(role: Role, level: Level, name: string, results: GameResult[]) {
   const total = average(results.map((r) => r.score));
   const title = titleFor(role.noun, total);
-  const isRecord = total > best(role.id);
-  if (isRecord) localStorage.setItem(`noitro.best.${role.id}`, String(total));
+  const isRecord = total > best(role.id, level);
+  if (isRecord) localStorage.setItem(bestKey(role.id, level), String(total));
 
   const canvas = drawCertificate({
     name,
     role,
     title,
+    level,
     total,
     rows: GAMES.map((g, i) => ({ emoji: g.emoji, name: g.name, score: results[i].score })),
     url: SHARE_URL,
   });
-  const shareText = `Mình vừa được chứng nhận "${title}" với ${total} điểm 😎 Bạn đảm đang tới đâu?`;
+  const levelNote = byLevel(level, ["", " ở mức Đảm đang 🔥", " ở mức Mẹ chồng khó tính 😈"]);
+  const shareText = `Mình vừa được chứng nhận "${title}" với ${total} điểm${levelNote} 😎 Bạn đảm đang tới đâu?`;
 
   app.innerHTML = `
     <header class="top"><span class="step">Kết quả</span>${muteButton()}</header>
     <main class="center result">
-      ${isRecord && best(role.id) ? `<p class="record">🎉 Kỷ lục mới!</p>` : ""}
+      ${isRecord && best(role.id, level) ? `<p class="record">🎉 Kỷ lục mới!</p>` : ""}
       <img class="cert" alt="Giấy chứng nhận" src="${canvas.toDataURL("image/png")}" />
       <button class="btn primary big share">📤 Khoe ngay</button>
       <div class="row">
@@ -167,7 +199,7 @@ function finish(role: Role, name: string, results: GameResult[]) {
       app.querySelector(".share-note")!.textContent = "Đã tải ảnh về máy. Đăng ảnh lên Facebook/Zalo và rủ bạn bè chơi nhé!";
     }
   });
-  app.querySelector(".again")!.addEventListener("click", () => void run(role, name));
+  app.querySelector(".again")!.addEventListener("click", () => void run(role, level, name));
   app.querySelector(".home-btn")!.addEventListener("click", home);
 }
 

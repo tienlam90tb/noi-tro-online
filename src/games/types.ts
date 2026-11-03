@@ -1,4 +1,5 @@
 import type { GameId } from "../comments";
+import type { Level } from "../levels";
 import type { Role } from "../roles";
 
 export interface GameResult {
@@ -11,9 +12,9 @@ export interface Game {
   id: GameId;
   name: string;
   emoji: string;
-  howTo: string;
+  howTo(level: Level): string;
   /** Chơi trong `root`, trả kết quả khi xong. */
-  play(root: HTMLElement, ctx: { role: Role }): Promise<GameResult>;
+  play(root: HTMLElement, ctx: { role: Role; level: Level }): Promise<GameResult>;
 }
 
 /** Đồng hồ đếm ngược hiển thị ở đầu màn chơi. Trả hàm dừng. */

@@ -1,15 +1,15 @@
 import { dishesScore } from "../scoring";
 import { sfx } from "../sfx";
 import { Actors, pick, sceneHtml } from "../scene";
+import { byLevel } from "../levels";
 import { countdown, sleep, type Game } from "./types";
 
 const SECONDS = 30;
 const SIZE = 220; // kích thước đĩa (px CSS)
 const BRUSH = 26;
-/** Vuốt nhanh hơn mức này (px/ms) bị cảnh báo; 3 lần cảnh báo thì vỡ bát. */
-const FAST = 2.8;
 const WARNINGS_TO_BREAK = 3;
-const CLEAN_THRESHOLD = 0.04; // còn dưới 4% vết bẩn là sạch
+/** Thứ tự đồ phải rửa; sau cái sạch đầu tiên thì chen một cái nồi cháy. */
+const DISH_KINDS = ["dish-plate", "dish-bowl"];
 
 /** Vẽ vết bẩn (mỡ, nước sốt, hạt cơm) lên lớp phủ. */
 function paintDirt(ctx: CanvasRenderingContext2D, scale: number, blobs = 14, clear = true) {
@@ -37,21 +37,27 @@ function paintDirt(ctx: CanvasRenderingContext2D, scale: number, blobs = 14, cle
   }
 }
 
-/** Tỉ lệ diện tích còn bẩn, lấy mẫu thưa cho nhanh. */
-function dirtRatio(ctx: CanvasRenderingContext2D, px: number): number {
+/**
+ * Đo vết bẩn, lấy mẫu thưa cho nhanh: `ratio` là tỉ lệ diện tích còn bẩn rõ (để quyết định đã sạch chưa),
+ * `mass` là tổng độ đậm (để thanh tiến độ nhích dần cả khi mỡ mới chỉ nhạt bớt).
+ */
+function dirtStats(ctx: CanvasRenderingContext2D, px: number): { ratio: number; mass: number } {
   const data = ctx.getImageData(0, 0, px, px).data;
   let dirty = 0;
   let total = 0;
+  let mass = 0;
   const c = px / 2;
   const rr = (px * 0.42) ** 2;
   for (let y = 0; y < px; y += 6) {
     for (let x = 0; x < px; x += 6) {
       if ((x - c) ** 2 + (y - c) ** 2 > rr) continue;
       total++;
-      if (data[(y * px + x) * 4 + 3] > 40) dirty++;
+      const a = data[(y * px + x) * 4 + 3];
+      mass += a;
+      if (a > 40) dirty++;
     }
   }
-  return dirty / total;
+  return { ratio: dirty / total, mass: mass / total / 255 };
 }
 
 const SAY_WARN = ["Nhẹ tay thôi!", "Bát chứ có phải đá đâu!", "Từ từ kẻo vỡ bây giờ!"];
@@ -63,11 +69,22 @@ export const dishes: Game = {
   id: "dishes",
   name: "Rửa bát",
   emoji: "🍽️",
-  howTo: `Vuốt để chùi sạch vết bẩn. Rửa càng nhiều càng tốt trong ${SECONDS} giây. Chà mạnh quá là vỡ, và coi chừng con mèo!`,
+  howTo: (level) =>
+    byLevel(level, [
+      `Vuốt để chùi sạch vết bẩn. Rửa càng nhiều càng tốt trong ${SECONDS} giây. Chà mạnh quá là vỡ, và coi chừng con mèo!`,
+      "Mỡ cứng: phải chà đi chà lại mới sạch. Tay nặng hơn một chút là vỡ, mèo ghé 2 lần.",
+      "Mỡ đóng cục, phải sạch bong mới tính. Vuốt hơi nhanh là vỡ, mèo ghé 2 lần. Mẹ chồng đang nhìn!",
+    ]),
 
-  async play(root, { role }) {
+  async play(root, { role, level }) {
+    /** Mỗi lần vuốt xoá được bao nhiêu phần vết bẩn (1 = sạch ngay). */
+    const strength = byLevel(level, [1, 0.7, 0.55]);
+    /** Vuốt nhanh hơn mức này (px/ms) bị cảnh báo; 3 lần cảnh báo thì vỡ bát. */
+    const FAST = byLevel(level, [2.8, 2.4, 2.1]);
+    const CLEAN_THRESHOLD = byLevel(level, [0.04, 0.03, 0.02]);
+    const catCount = byLevel(level, [1, 2, 2]);
     root.innerHTML = `
-      <div class="game-bar"><span>🍽️ Sạch: <b class="clean">0</b> · 💥 Vỡ: <b class="broken">0</b></span><span class="timer"></span></div>
+      <div class="game-bar"><span>✨ Sạch: <b class="clean">0</b> · 💥 Vỡ: <b class="broken">0</b></span><span class="timer"></span></div>
       ${sceneHtml({
         kind: "kitchen",
         role,
@@ -78,11 +95,15 @@ export const dishes: Game = {
               <canvas class="dirt" width="${SIZE}" height="${SIZE}"></canvas>
               <div class="crack hidden">💥</div>
             </div>
-            <div class="stack" aria-hidden="true">🍽️<br/>🍽️<br/>🍽️</div>
+            <div class="side">
+              <div class="rack" aria-label="Giá bát sạch"></div>
+              <div class="trash" aria-label="Thùng rác">🗑️<span class="shards"></span></div>
+            </div>
           </div>
           <button class="cat hidden" aria-label="Đuổi mèo">🐈</button>`,
       })}
-      <div class="meter"><div></div></div>`;
+      <div class="meter"><div></div></div>
+      <p class="hint">Chà đến khi thanh xanh đầy. Đừng vuốt quá nhanh!</p>`;
 
     const actors = new Actors(root);
     const scale = Math.min(window.devicePixelRatio || 1, 2);
@@ -101,16 +122,22 @@ export const dishes: Game = {
     let warnings = 0;
     let lastWarn = 0;
     let ratio = 1;
-    let startRatio = 1;
+    let mass = 1;
+    let startMass = 1;
+    const measure = () => ({ ratio, mass } = dirtStats(ctx, px));
     let busy = false; // đang chuyển sang đĩa mới
     let over = false;
     let last: { x: number; y: number; t: number } | null = null;
     let lastCheck = 0;
     let lastScrub = performance.now();
     let potServed = false;
+    let dishNo = 0;
+    let lastFoam = 0;
+    const rack = root.querySelector<HTMLElement>(".rack")!;
 
     const updateMeter = () => {
-      const progress = Math.min(1, (startRatio - ratio) / Math.max(0.01, startRatio - CLEAN_THRESHOLD));
+      // Chưa đạt chuẩn sạch thì thanh dừng ở 97% để không "đầy" mà vẫn chưa xong.
+      const progress = ratio <= CLEAN_THRESHOLD ? 1 : Math.min(0.97, 1 - mass / Math.max(0.001, startMass));
       meter.style.width = `${Math.round(Math.max(0, progress) * 100)}%`;
       return Math.max(0, progress);
     };
@@ -122,9 +149,12 @@ export const dishes: Game = {
         potServed = true;
         actors.say("Rửa nốt cái nồi cháy này cho mẹ!", 2000, true);
       }
-      wrap.classList.toggle("pot", pot);
+      const kind = pot ? "dish-pot" : DISH_KINDS[dishNo++ % DISH_KINDS.length];
+      wrap.classList.remove("dish-pot", "dish-plate", "dish-bowl");
+      wrap.classList.add(kind);
       paintDirt(ctx, scale, pot ? 26 : 14);
-      startRatio = ratio = dirtRatio(ctx, px);
+      measure();
+      startMass = mass;
       warnings = 0;
       updateMeter();
       crackEl.classList.add("hidden");
@@ -143,6 +173,9 @@ export const dishes: Game = {
         actors.mood("happy");
         actors.say(pick(SAY_CLEAN), 1400, true);
         root.querySelector(".clean")!.textContent = String(clean);
+        // Úp lên giá: đĩa trắng, bát viền xanh, nồi xám.
+        const kind = DISH_KINDS.find((k) => wrap.classList.contains(k)) ?? "dish-pot";
+        rack.insertAdjacentHTML("beforeend", `<span class="racked ${kind}"></span>`);
       } else {
         broken++;
         sfx.crash();
@@ -151,6 +184,7 @@ export const dishes: Game = {
         actors.mood("shock");
         actors.say(pick(SAY_BREAK), 1600, true);
         root.querySelector(".broken")!.textContent = String(broken);
+        root.querySelector(".shards")!.textContent = "🔸".repeat(Math.min(broken, 4));
       }
       await sleep(650);
       if (!over) newPlate();
@@ -178,6 +212,8 @@ export const dishes: Game = {
           sfx.bad();
         }
         ctx.globalCompositeOperation = "destination-out";
+        // Mỡ cứng: một lượt vuốt qua một điểm chỉ xoá được `strength` phần, dù nét bị chia nhỏ thành nhiều đoạn.
+        ctx.globalAlpha = strength >= 1 ? 1 : 1 - (1 - strength) ** Math.min(1, dist / (BRUSH * 2));
         ctx.lineWidth = BRUSH * 2 * scale;
         ctx.lineCap = "round";
         ctx.beginPath();
@@ -185,13 +221,25 @@ export const dishes: Game = {
         ctx.lineTo(x, y);
         ctx.stroke();
         ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1;
+      }
+      // Bọt xà phòng theo miếng rửa.
+      if (now - lastFoam > 50) {
+        lastFoam = now;
+        const foam = document.createElement("span");
+        foam.className = "foam";
+        foam.style.left = `${(x / px) * 100}%`;
+        foam.style.top = `${(y / px) * 100}%`;
+        foam.style.setProperty("--s", String(0.6 + Math.random() * 0.8));
+        wrap.appendChild(foam);
+        setTimeout(() => foam.remove(), 700);
       }
       last = { x, y, t: now };
       actors.reach(e.clientX, e.clientY, "🧽");
 
       if (now - lastCheck > 120) {
         lastCheck = now;
-        ratio = dirtRatio(ctx, px);
+        measure();
         updateMeter();
         if (ratio <= CLEAN_THRESHOLD) void finishPlate(true);
         else if (Math.random() < 0.15) sfx.splash();
@@ -215,14 +263,14 @@ export const dishes: Game = {
     let catTimer = 0;
     const catAppears = () => {
       if (over) return;
-      cat.classList.remove("hidden", "shoo");
+      cat.classList.remove("hidden", "shoo", "lick");
       sfx.tap();
       actors.say("Ối, con mèo! Đuổi nó đi!", 1800, true);
       catTimer = window.setTimeout(() => {
         if (over || cat.classList.contains("hidden")) return;
         cat.classList.add("lick");
         paintDirt(ctx, scale, 8, false);
-        ratio = dirtRatio(ctx, px);
+        measure();
         updateMeter();
         actors.say("Con mèo nó liếm bát kìa! Rửa lại!", 1800, true);
         sfx.bad();
@@ -236,7 +284,8 @@ export const dishes: Game = {
       actors.say("Đuổi mèo nhanh đấy!", 1200, true);
       setTimeout(() => cat.classList.add("hidden"), 400);
     });
-    const catAt = window.setTimeout(catAppears, 9000 + Math.random() * 9000);
+    const catTimes = catCount === 1 ? [9000 + Math.random() * 9000] : [6000 + Math.random() * 4000, 17000 + Math.random() * 5000];
+    const catAts = catTimes.map((t) => window.setTimeout(catAppears, t));
 
     // Đứng im lâu thì bị nhắc.
     const idle = window.setInterval(() => {
@@ -249,7 +298,7 @@ export const dishes: Game = {
     newPlate();
     await new Promise<void>((resolve) => countdown(root.querySelector(".timer")!, SECONDS, resolve));
     over = busy = true;
-    clearTimeout(catAt);
+    catAts.forEach(clearTimeout);
     clearTimeout(catTimer);
     clearInterval(idle);
     actors.relax();
